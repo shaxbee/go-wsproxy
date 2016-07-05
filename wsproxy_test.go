@@ -28,7 +28,7 @@ func TestRead(t *testing.T) {
 		{Foo: "baz"},
 	}
 
-	ts := serve(Config{}, func(w http.ResponseWriter, r *http.Request) {
+	ts, wg := serve(Config{}, func(w http.ResponseWriter, r *http.Request) {
 		bw := bufio.NewWriter(w)
 
 		for _, e := range exp {
@@ -51,6 +51,8 @@ func TestRead(t *testing.T) {
 			assert.Equal(t, e, m)
 		}
 	}
+
+	wg.Wait()
 }
 
 func TestWrite(t *testing.T) {
@@ -59,16 +61,7 @@ func TestWrite(t *testing.T) {
 		{Foo: "baz"},
 	}
 
-	wg := sync.WaitGroup{}
-	ts := serve(Config{}, func(w http.ResponseWriter, r *http.Request) {
-		wg.Add(1)
-		defer wg.Done()
-
-		b, err := ioutil.ReadAll(r.Body)
-		assert.NoError(t, err)
-		fmt.Println("b", string(b))
-		assert.FailNow(t, "KURWA")
-
+	ts, wg := serve(Config{}, func(w http.ResponseWriter, r *http.Request) {
 		br := bufio.NewReader(r.Body)
 
 		for _, e := range exp {
@@ -91,7 +84,7 @@ func TestWrite(t *testing.T) {
 }
 
 func TestPlain(t *testing.T) {
-	ts := serve(Config{}, func(w http.ResponseWriter, r *http.Request) {
+	ts, wg := serve(Config{}, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Hello World!")
 	})
 	defer ts.Close()
@@ -104,11 +97,13 @@ func TestPlain(t *testing.T) {
 	if assert.NoError(t, err) {
 		assert.Equal(t, "Hello World!", string(b))
 	}
+
+	wg.Wait()
 }
 
 func TestReadToken(t *testing.T) {
 	c := Config{ReadToken: true}
-	ts := serve(c, func(w http.ResponseWriter, r *http.Request) {
+	ts, wg := serve(c, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, r.Header.Get("Authorization"), "Bearer dummy token")
 	})
 	defer ts.Close()
@@ -116,28 +111,39 @@ func TestReadToken(t *testing.T) {
 	ws := dial(t, ts)
 	assert.NoError(t, websocket.Message.Send(ws, "dummy token"))
 	defer ws.Close()
+
+	wg.Wait()
 }
 
 func TestRewriteMethod(t *testing.T) {
 	c := Config{RewriteMethod: "POST"}
-	ts := serve(c, func(w http.ResponseWriter, r *http.Request) {
+	ts, wg := serve(c, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
 		b, err := ioutil.ReadAll(r.Body)
 		defer r.Body.Close()
 
 		if assert.NoError(t, err) {
-			assert.Equal(t, "Hello World!", string(b))
+			assert.Equal(t, "Hello World!\n", string(b))
 		}
 	})
 	defer ts.Close()
 
 	ws := dial(t, ts)
-	defer ws.Close()
 	assert.NoError(t, websocket.Message.Send(ws, "Hello World!"))
+	ws.Close()
+
+	wg.Wait()
 }
 
-func serve(c Config, h func(http.ResponseWriter, *http.Request)) *httptest.Server {
-	return httptest.NewServer(New(c, http.HandlerFunc(h)))
+func serve(c Config, h func(http.ResponseWriter, *http.Request)) (*httptest.Server, *sync.WaitGroup) {
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	f := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer wg.Done()
+		h(w, r)
+	})
+	s := httptest.NewServer(New(c, f))
+	return s, wg
 }
 
 func dial(t *testing.T, ts *httptest.Server) *websocket.Conn {
@@ -151,7 +157,6 @@ func read(br *bufio.Reader, m *Message) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("b", string(b))
 	return json.Unmarshal(b, m)
 }
 

@@ -64,10 +64,8 @@ func (wp *WebSocketProxy) proxy(req *http.Request, ws *websocket.Conn) {
 	}
 
 	orp, iwp := io.Pipe()
-	or := bufio.NewReader(orp)
-
 	irp, owp := io.Pipe()
-	ow := bufio.NewWriter(owp)
+	defer owp.Close()
 
 	go wp.h.ServeHTTP(respForwarder(iwp), &http.Request{
 		Method:        method,
@@ -83,20 +81,18 @@ func (wp *WebSocketProxy) proxy(req *http.Request, ws *websocket.Conn) {
 		Cancel:        req.Cancel,
 	})
 
-	go listenRead(ctx, ws, ow)
-	listenWrite(ctx, ws, or)
+	go listenWrite(ctx, ws, bufio.NewReader(orp))
+	listenRead(ctx, ws, bufio.NewWriter(owp))
 }
 
 func listenRead(ctx context.Context, ws *websocket.Conn, w *bufio.Writer) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			_, err := w.ReadFrom(ws)
+			var m string
+			err := websocket.Message.Receive(ws, &m)
 			if err == io.EOF {
 				return
 			} else if err != nil {
@@ -104,6 +100,7 @@ func listenRead(ctx context.Context, ws *websocket.Conn, w *bufio.Writer) {
 				return
 			}
 
+			w.WriteString(m)
 			w.WriteRune('\n')
 			if err := w.Flush(); err != nil {
 				glog.Errorf("shaxbee/go-wsproxy: Error while writing request: %s", err)
