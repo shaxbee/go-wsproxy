@@ -12,7 +12,7 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-// WebSocketProxy adds WebSocket capability to JSON Streaming HTTP/2 services
+// WebSocketProxy adds websocket capability to JSON Streaming HTTP/2 services
 type WebSocketProxy struct {
 	c Config
 	h http.Handler
@@ -20,12 +20,16 @@ type WebSocketProxy struct {
 
 // Config contains parameters for WebSocketProxy
 type Config struct {
-	ReadToken     bool
+	// Expect first message to contain OAuth token.
+	// Provided token will be forwarder to handler in Authorization header.
+	ReadToken bool
+	// Rewrite GET method used in websocket connection to provided value.
+	// Ignored if empty.
 	RewriteMethod string
 }
 
 // New creates instance of WebSocketProxy wrapping given http.Handler
-// Wrapped handler will proxy underlying request through WebSocket.
+// Wrapped handler will proxy underlying request through websocket.
 // If upgrade to websocket is not requested handler will be invoked directly.
 func New(c Config, h http.Handler) *WebSocketProxy {
 	return &WebSocketProxy{c, h}
