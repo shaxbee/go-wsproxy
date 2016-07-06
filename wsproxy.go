@@ -51,14 +51,11 @@ func (wp *WebSocketProxy) proxy(req *http.Request, ws *websocket.Conn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var header http.Header
-	if wp.c.ReadToken {
-		var tok string
-		if err := websocket.Message.Receive(ws, &tok); err != nil {
-			return
-		}
-		header = http.Header{"Authorization": {"Bearer " + tok}}
-	}
+	orp, iwp := io.Pipe()
+	defer iwp.Close()
+
+	irp, owp := io.Pipe()
+	defer owp.Close()
 
 	var method string
 	if wp.c.RewriteMethod != "" {
@@ -67,23 +64,21 @@ func (wp *WebSocketProxy) proxy(req *http.Request, ws *websocket.Conn) {
 		method = req.Method
 	}
 
-	orp, iwp := io.Pipe()
-	irp, owp := io.Pipe()
-	defer owp.Close()
+	nreq, err := http.NewRequest(method, req.URL.String(), irp)
+	if err != nil {
+		glog.Errorf("shaxbee/go-wsproxy: Error creating request: %s", err)
+	}
+	if wp.c.ReadToken {
+		var tok string
+		if err := websocket.Message.Receive(ws, &tok); err != nil {
+			return
+		}
+		nreq.Header.Set("Authorization", "Bearer "+tok)
+	}
+	nreq.Cancel = ctx.Done()
 
-	go wp.h.ServeHTTP(respForwarder(iwp), &http.Request{
-		Method:        method,
-		URL:           req.URL,
-		Proto:         "HTTP/2",
-		ProtoMajor:    2,
-		ProtoMinor:    0,
-		Header:        header,
-		Body:          irp,
-		ContentLength: -1,
-		Host:          req.Host,
-		RemoteAddr:    req.RemoteAddr,
-		Cancel:        req.Cancel,
-	})
+	glog.V(2).Infof("shaxbee/go-wsproxy: Forwarding websocket to %s %s", method, req.URL.String())
+	go wp.h.ServeHTTP(respForwarder(iwp), nreq)
 
 	go listenWrite(ctx, ws, bufio.NewReader(orp))
 	listenRead(ctx, ws, bufio.NewWriter(owp))
@@ -120,7 +115,7 @@ func listenWrite(ctx context.Context, ws *websocket.Conn, r *bufio.Reader) {
 		case <-ctx.Done():
 			return
 		default:
-			b, err := r.ReadBytes('\n')
+			s, err := r.ReadString('\n')
 			if err == io.EOF {
 				return
 			} else if err != nil {
@@ -128,7 +123,7 @@ func listenWrite(ctx context.Context, ws *websocket.Conn, r *bufio.Reader) {
 				return
 			}
 
-			if err := websocket.Message.Send(ws, b); err != nil {
+			if err := websocket.Message.Send(ws, s); err != nil {
 				glog.Errorf("shaxbee/go-wsproxy: Error while writing to websocket: %s", err)
 				return
 			}
@@ -137,12 +132,12 @@ func listenWrite(ctx context.Context, ws *websocket.Conn, r *bufio.Reader) {
 
 }
 
-func respForwarder(w io.Writer) http.ResponseWriter {
+func respForwarder(w *io.PipeWriter) http.ResponseWriter {
 	return &responseForwarder{w, make(http.Header)}
 }
 
 type responseForwarder struct {
-	io.Writer
+	*io.PipeWriter
 	h http.Header
 }
 
@@ -151,5 +146,9 @@ func (rf *responseForwarder) Header() http.Header {
 }
 
 func (rf *responseForwarder) WriteHeader(int) {
+
+}
+
+func (rf *responseForwarder) Flush() {
 
 }
